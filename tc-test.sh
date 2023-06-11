@@ -16,7 +16,7 @@ function show_menu() {
 # 10 转 16
 decimal_to_hex() {
     decimal=$1
-    hex=$(printf "%X" $decimal)
+    hex=$(printf "%x" $decimal)
     echo $hex
 }
 
@@ -27,13 +27,12 @@ hex_to_decimal() {
     echo $decimal
 }
 
-
 # 获取当前机器默认路由对应的网卡名称
 function get_default_route_interface() {
     # 获取默认路由对应的网卡名称
-    # interface=$(ip route | grep default | awk '{print $5}')
-    # echo $interface
-    echo "eth0"
+    interface=$(ip route | grep default | awk '{print $5}')
+    echo $interface
+    # echo "eth0"
 }
 
 # 检查根出站队列是否添加
@@ -62,8 +61,9 @@ function check_has_ingress_queue() {
 function check_has_outbound_class() {
     local interface="$1"
     local port="$2"
+    local hex_port=$(decimal_to_hex $port)
     # 检查出站class是否存在
-    tc class show dev "$interface" | grep -q "1:$port"
+    tc class show dev $interface | grep -q "1:$hex_port"
     if [ $? -ne 0 ]; then
         return 1
     fi
@@ -91,7 +91,7 @@ function add_limit_strategy() {
     hex_port=$(decimal_to_hex $port)
 
     # 检查对应port的出站class是否已经存在
-    check_has_outbound_class "$interface" "$hex_port"
+    check_has_outbound_class $interface $port
     if [ $? -eq 0 ]; then
         # 输入 Y/N 选择是否覆盖
         read -p "当前端口已经存在限速策略，是否覆盖？[Y/N]: " choice
@@ -99,6 +99,9 @@ function add_limit_strategy() {
             echo -e "\nError：已经存在限速策略，不覆盖，退出!\n"
             return
         fi
+        # 删除filter
+        tc filter del dev $interface parent 1: protocol ip prio $port u32
+        tc filter del dev $IFB_NAME parent 1: protocol ip prio $port u32
     fi
 
     # 添加限速策略
@@ -129,9 +132,9 @@ function add_limit_strategy() {
 
     # 为入站与出站添加对应的filter
     # 出站过滤器
-    tc filter replace dev $interface parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:$hex_port
+    tc filter replace dev $interface parent 1: protocol ip prio $port u32 match ip sport "$port" 0xffff flowid 1:$hex_port
     # 入站过滤器
-    tc filter replace dev $IFB_NAME parent 1: protocol ip prio 1 u32 match ip dport "$port" 0xffff flowid 1:$hex_port
+    tc filter replace dev $IFB_NAME parent 1: protocol ip prio $port u32 match ip dport "$port" 0xffff flowid 1:$hex_port
 
     echo -e '\nSuccess：添加限速策略成功!\n'
 }
@@ -143,32 +146,36 @@ function delete_limit_strategy() {
     # 获取默认路由对应的网卡名称
     interface=$(get_default_route_interface)
     # 判断对应端口的出站class是否存在
-    check_has_outbound_class "$interface" "$port"
+    check_has_outbound_class $interface $port
     if [ $? -ne 0 ]; then
         echo -e "\nError：对应端口的出站class不存在，无需删除!\n"
         return
     fi
 
+    local hex_port=$(decimal_to_hex $port)
+
     # 删除出站限速策略
-    tc filter del dev $interface parent 1: protocol ip prio 1 u32 match ip sport "$port" 0xffff flowid 1:$port
+    tc filter del dev $interface parent 1: protocol ip prio $port u32
     # 删除出站class
-    tc class del dev $interface parent 1:1 classid 1:$port
+    tc class del dev $interface parent 1:1 classid 1:$hex_port
 
     # 删除入站限速策略
-    tc filter del dev $IFB_NAME parent 1: protocol ip prio 1 u32 match ip dport "$port" 0xffff flowid 1:$port
+    tc filter del dev $IFB_NAME parent 1: protocol ip prio $port u32
     # 删除入站class
-    tc class del dev $IFB_NAME parent 1:1 classid 1:$port
+    tc class del dev $IFB_NAME parent 1:1 classid 1:$hex_port
 
     echo -e "\nSuccess：删除限速策略成功\n"
 }
 
 # 清空限速策略函数
 function clear_limit_strategy() {
+    interface=$(get_default_route_interface)
+
     # 删除ens18的出站root队列
-    tc qdisc del dev ens18 root
+    tc qdisc del dev $interface root
 
     # 删除ens18的入站队列
-    tc qdisc del dev ens18 ingress
+    tc qdisc del dev $interface ingress
 
     # 删除ifb0网卡的根队列
     tc qdisc del dev ifb0 root
@@ -233,7 +240,6 @@ while true; do
 
     echo # 打印一个空行进行分隔
 done
-
 
 # 添加默认匹配filter
 # tc filter add dev eth0 parent 1: protocol all prio 999 u32 match ip protocol 0 0x00 flowid 1:1
